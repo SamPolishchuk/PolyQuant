@@ -6,7 +6,7 @@ import time
 import os
 
 url = "https://gamma-api.polymarket.com/markets"
-csv_file = r"C:\Users\2same\Economics BSc\Quant\Year 2\market_id.csv"
+csv_file = r"C:\Users\2same\Economics BSc\Quant\PolyQuant\data\market_id.csv"
 
 # Initialize CSV if it doesn't exist or is empty
 if os.path.exists(csv_file) and os.path.getsize(csv_file) > 0:
