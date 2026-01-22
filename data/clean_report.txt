@@ -1,0 +1,8 @@
+CSV Clean Report
+================
+read: 26045
+dropped_na: 21779
+dropped_category: 3273
+dropped_duplicate_id: 0
+written: 993
+
