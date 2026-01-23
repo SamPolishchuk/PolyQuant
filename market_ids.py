@@ -21,15 +21,15 @@ else:
     print(f"Creating new CSV file: {csv_file}\n")
 
 # Start from 2021-01-01, slide by weeks
-start_date = datetime(2025, 12, 1)
+start_date = datetime(2025, 1, 1)
 end_date = datetime.now()
 current_date = start_date
-week_duration = timedelta(days=3)
+week_duration = timedelta(days=1)
 
 all_markets = []
 
 while current_date < end_date:
-    time.sleep(1.5)  # Be polite to the API
+    time.sleep(1)  # Be polite to the API
 
     week_end = current_date + week_duration
     
