@@ -16,7 +16,8 @@ from pathlib import Path
 
 BANNED_CATEGORIES = {
     'sports', 'nba playoffs', 'crypto', 'blanks', 'chess',
-    'poker', 'art', 'nfts', 'olympics'
+    'poker', 'art', 'nfts', 'olympics', 'nba', 'fantasy sports',
+    'nfl', 'soccer', '-', 'mlb', 'nhl', 'tennis'
 }
 
 REQUIRED_NON_NA_COLUMNS = {'id', 'closedTime'}
