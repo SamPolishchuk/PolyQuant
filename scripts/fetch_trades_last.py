@@ -4,9 +4,7 @@ import time
 import os
 from datetime import timedelta
 
-# ======================================================
 # CONFIG
-# ======================================================
 
 TRADES_URL = "https://data-api.polymarket.com/trades"
 USER_VALUE_URL = "https://data-api.polymarket.com/value"
