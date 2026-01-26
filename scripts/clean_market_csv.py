@@ -6,6 +6,8 @@ Stream-based CSV cleaner for the market_id.csv file.
 - Drops malformed rows (where JSON commas cause column shifting)
 - Writes cleaned CSV and a small report
 
+Usage:
+
 python scripts\clean_market_csv.py -i data\market_id.csv -o data\market_ids_cleaned.csv --report data\clean_report.txt
 """
 
