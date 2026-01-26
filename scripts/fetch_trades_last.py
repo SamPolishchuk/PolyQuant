@@ -10,7 +10,7 @@ TRADES_URL = "https://data-api.polymarket.com/trades"
 USER_VALUE_URL = "https://data-api.polymarket.com/value"
 USER_TRADED_URL = "https://data-api.polymarket.com/traded"
 
-MARKET_FILE = "data/market_ids_cleaned.csv"
+MARKET_FILE = "data/market_ids_filtered.csv"
 CHECKPOINT_FILE = "data/trade_checkpoints.csv"
 
 # --- GLOBAL CONSTANTS ---
