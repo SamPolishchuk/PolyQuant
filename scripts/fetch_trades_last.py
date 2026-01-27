@@ -15,11 +15,17 @@ CHECKPOINT_FILE = "data/trade_checkpoints.csv"
 
 # --- GLOBAL CONSTANTS ---
 WINDOW_HOURS = 24
+
+"""
+I was thinking that we might want to try looking at 72 hours or 48 hours as well, to capture (for eg) a spike in liquidity before market close.
+But for now, let's keep it at 24 hours to see how much data we get.
+"""
+
 TRADES_CSV = f"data/trades_last_{WINDOW_HOURS}h.csv"
 DONE_COL = f"done_{WINDOW_HOURS}h"
 
 LIMIT = 100
-MIN_DATA = 50
+MIN_DATA = 10
 SLEEP_SECONDS = 0.5
 TIMEOUT = 30
 
@@ -124,12 +130,6 @@ for _, market in active_markets.iterrows():
             r.raise_for_status()
             data = r.json()
 
-            # First page special cases
-            if offset == 0 and data and len(data) < MIN_DATA:
-                print(f"First page returned only {len(data)} (<{MIN_DATA}). Flagging market to ignore.")
-                done_this_window = True
-                break
-
             # No data case
             if not data:
                 if offset == 0:
@@ -144,6 +144,11 @@ for _, market in active_markets.iterrows():
             keep = df[df["timestamp"] >= cutoff_time].copy()
 
             if not keep.empty:
+                if len(keep) < MIN_DATA and offset == 0:
+                    print(f"  ! Only {len(keep)} recent trades found. Flagging as is_empty.")
+                    is_empty = True
+                    break
+
                 unique_users = keep["proxyWallet"].unique()
                 user_map = {u: get_user_stats(u) for u in unique_users}
 

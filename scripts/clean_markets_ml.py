@@ -89,12 +89,15 @@ BANNED_KEYWORDS = {
     # Crypto & Other (Retained from previous)
     "crypto", "bitcoin", "ethereum", "solana", "dogecoin", "token", "yield", "etf", "euro 2020",
     "covid", "coronavirus", "weather", "forecast", "elon musk", "tweet", "chess", "spread", 
-    "ufc", "mma", 'boxing', "fight", "wwe", " lol", "dota", "valorant", "csgo", "S&P", "vs."
+    "ufc", "mma", 'boxing', "fight", "wwe", " lol", "dota", "valorant", "csgo", "S&P", "vs.", "derby"
 }
 
 REGEX_PATTERNS = [
     # Matchups: "Team vs Team", "Team @ Team", "Team v Team"
     re.compile(r"\b\w+\s*(vs|versus|@|v|/)\s*\w+\b", re.I),
+
+    # \b ensures it doesn't match "ETHereum" or "BITCoin"
+    re.compile(r"\b[A-Z]{3}\b"),
 
     # Major Tournaments
     re.compile(r"\b(ucl|uel|uefa|champions league|europa league|conference league)\b", re.I),
@@ -108,6 +111,13 @@ REGEX_PATTERNS = [
 
     # Specific 2026 Suffixes
     re.compile(r"\b(fc|united|city|real|athletic|sporting|olympique|as|ac)\b", re.I),
+
+    # Captures: "Will [Team/Player] win?" or "Will [Team/Player] draw?"
+    # \b ensures we match whole words; .*? is a non-greedy match for the content in between
+    re.compile(r"\bWill\b.*?\b(win|draw)\b\?", re.I),
+
+    # Bonus: Captures "Who will win: [Team] or [Team]?"
+    re.compile(r"\bWho\b.*?\bwin\b.*?\?", re.I),
 ]
 
 REQUIRED_NON_NA = {"id", "closedTime"}
