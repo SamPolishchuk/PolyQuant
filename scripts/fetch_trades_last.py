@@ -13,24 +13,19 @@ USER_TRADED_URL = "https://data-api.polymarket.com/traded"
 MARKET_FILE = "data/market_ids_filtered.csv"
 CHECKPOINT_FILE = "data/trade_checkpoints.csv"
 
-# --- GLOBAL CONSTANTS ---
 WINDOW_HOURS = 24
-
-"""
-I was thinking that we might want to try looking at 72 hours or 48 hours as well, to capture (for eg) a spike in liquidity before market close.
-But for now, let's keep it at 24 hours to see how much data we get.
-"""
-
 TRADES_CSV = f"data/trades_last_{WINDOW_HOURS}h.csv"
 DONE_COL = f"done_{WINDOW_HOURS}h"
 
 LIMIT = 100
-MIN_DATA = 10
+MIN_RECENT_TRADES = 10          # recent liquidity threshold
+MIN_LIFETIME_TRADES = 50        # structural market filter
 SLEEP_SECONDS = 0.5
 TIMEOUT = 30
 
+# HELPERS
 
-# ----- HELPERS -------
+USER_CACHE = {}
 
 def append_to_csv(df, path):
     if df.empty:
@@ -43,80 +38,69 @@ def parse_timestamp(series):
         return pd.to_datetime(series, unit="ms", utc=True)
     return pd.to_datetime(series, unit="s", utc=True)
 
-def get_user_stats(proxy_wallet):
+def get_user_stats(wallet):
+    if wallet in USER_CACHE:
+        return USER_CACHE[wallet]
+
     stats = {"user_total_value": 0, "user_total_trades": 0}
+
     try:
-        val_r = requests.get(USER_VALUE_URL, params={"user": proxy_wallet}, timeout=TIMEOUT)
-        val_data = val_r.json()
+        r_val = requests.get(USER_VALUE_URL, params={"user": wallet}, timeout=TIMEOUT)
+        val_data = r_val.json()
         if val_data and isinstance(val_data, list):
             stats["user_total_value"] = val_data[0].get("value", 0)
 
-        trd_r = requests.get(USER_TRADED_URL, params={"user": proxy_wallet}, timeout=TIMEOUT)
-        trd_data = trd_r.json()
+        r_trd = requests.get(USER_TRADED_URL, params={"user": wallet}, timeout=TIMEOUT)
+        trd_data = r_trd.json()
         stats["user_total_trades"] = trd_data.get("traded", 0)
 
     except Exception:
         pass
 
+    USER_CACHE[wallet] = stats
     return stats
 
-# ------ CHECKPOINTS ------
+# CHECKPOINT HANDLING
 
 if os.path.exists(CHECKPOINT_FILE):
     checkpoints = pd.read_csv(CHECKPOINT_FILE)
-
-    if DONE_COL not in checkpoints.columns:
-        checkpoints[DONE_COL] = False
-
-    if "is_empty" not in checkpoints.columns:
-        checkpoints["is_empty"] = False
-
 else:
-    checkpoints = pd.DataFrame(columns=["conditionId", "offset", "is_empty", DONE_COL])
+    checkpoints = pd.DataFrame(columns=["conditionId", "is_structurally_dead", DONE_COL])
 
-# Remove empty / ignored markets
-empty_market_ids = set(checkpoints.loc[checkpoints["is_empty"] == True, "conditionId"])
+for col in ["is_structurally_dead", DONE_COL]:
+    if col not in checkpoints.columns:
+        checkpoints[col] = False
+
+dead_ids = set(checkpoints.loc[checkpoints["is_structurally_dead"], "conditionId"])
+done_ids = set(checkpoints.loc[checkpoints[DONE_COL], "conditionId"])
+
+# LOAD MARKETS
 
 markets_df = pd.read_csv(MARKET_FILE)
-original_count = len(markets_df)
+markets_df = markets_df[~markets_df["conditionId"].isin(dead_ids | done_ids)]
 
-markets_df = markets_df[~markets_df["conditionId"].isin(empty_market_ids)]
-
-if len(markets_df) < original_count:
-    print(f"🗑️  Pruned {original_count - len(markets_df)} empty/ignored markets from {MARKET_FILE}")
-    markets_df.to_csv(MARKET_FILE, index=False)
-
-# Active markets = not completed & not empty
-completed_ids = set(checkpoints.loc[checkpoints[DONE_COL] == True, "conditionId"])
-
-active_markets = markets_df[
-    ~markets_df["conditionId"].isin(completed_ids) &
-    ~markets_df["conditionId"].isin(empty_market_ids)
-].copy()
-
-active_markets["closedTime"] = pd.to_datetime(active_markets["closedTime"], utc=True, errors="coerce")
-active_markets = active_markets.dropna(subset=["closedTime"])
-
-checkpoint_map = {row.conditionId: row for _, row in checkpoints.iterrows()}
+markets_df["closedTime"] = pd.to_datetime(markets_df["closedTime"], utc=True, errors="coerce")
+markets_df = markets_df.dropna(subset=["closedTime"])
 
 print(f"✅ Target File: {TRADES_CSV}")
 print(f"✅ Tracking via column: {DONE_COL}")
-print(f"✅ Ready to process {len(active_markets)} markets.")
+print(f"✅ Ready to process {len(markets_df)} markets.")
+
+# MAIN LOOP
 
 total_appended = 0
 
-for _, market in active_markets.iterrows():
+for _, market in markets_df.iterrows():
     condition_id = market["conditionId"]
     close_time = market["closedTime"]
     cutoff_time = close_time - timedelta(hours=WINDOW_HOURS)
 
-    state = checkpoint_map.get(condition_id, None)
+    print(f"\n▶ Market {condition_id}")
 
     offset = 0
     done_this_window = False
-    is_empty = False
-
-    print(f"\n▶ Market {condition_id}")
+    structurally_dead = False
+    low_recent_liquidity = False
 
     while True:
         time.sleep(SLEEP_SECONDS)
@@ -130,39 +114,41 @@ for _, market in active_markets.iterrows():
             r.raise_for_status()
             data = r.json()
 
-            # No data case
             if not data:
-                if offset == 0:
-                    print("  ! No data found. Flagging as is_empty.")
-                    is_empty = True
                 done_this_window = True
                 break
 
             df = pd.DataFrame(data)
             df["timestamp"] = parse_timestamp(df["timestamp"])
 
-            keep = df[df["timestamp"] >= cutoff_time].copy()
-
-            if not keep.empty:
-                if len(keep) < MIN_DATA and offset == 0:
-                    print(f"  ! Only {len(keep)} recent trades found. Flagging as is_empty.")
-                    is_empty = True
+            # TRADE-HISTORY AT LEAST 50 TRANSACTIONS
+            if offset == 0:
+                if len(data) < MIN_LIFETIME_TRADES:
+                    print(f"  ! Only {len(data)} lifetime trades (<{MIN_LIFETIME_TRADES}). Dropping market.")
+                    structurally_dead = True
+                    done_this_window = True
                     break
 
-                unique_users = keep["proxyWallet"].unique()
-                user_map = {u: get_user_stats(u) for u in unique_users}
+            keep = df[df["timestamp"] >= cutoff_time].copy()
+
+            if offset == 0:
+                low_recent_liquidity = len(keep) < MIN_RECENT_TRADES
+                if low_recent_liquidity:
+                    print(f"  ⚠ Low recent liquidity: {len(keep)} trades in last {WINDOW_HOURS}h")
+
+            if not keep.empty:
+                users = keep["proxyWallet"].unique()
+                user_map = {u: get_user_stats(u) for u in users}
 
                 keep["user_total_value"] = keep["proxyWallet"].map(lambda x: user_map[x]["user_total_value"])
                 keep["user_total_trades"] = keep["proxyWallet"].map(lambda x: user_map[x]["user_total_trades"])
                 keep["conditionId"] = condition_id
+                keep["low_recent_liquidity"] = low_recent_liquidity
 
                 append_to_csv(keep, TRADES_CSV)
                 total_appended += len(keep)
 
                 print(f"    Added {len(keep)} trades")
-
-            else:
-                print(f"    Found {len(df)} trades, but all older than {WINDOW_HOURS}h.")
 
             if df["timestamp"].min() <= cutoff_time:
                 done_this_window = True
@@ -173,23 +159,16 @@ for _, market in active_markets.iterrows():
         except Exception as e:
             print(f"  Error: {e}")
             time.sleep(5)
-            continue
 
+    # UPDATE CHECKPOINTS
+    row = {
+        "conditionId": condition_id,
+        "is_structurally_dead": structurally_dead,
+        DONE_COL: done_this_window
+    }
 
-
-    if condition_id in checkpoints["conditionId"].values:
-        idx = checkpoints.index[checkpoints["conditionId"] == condition_id][0]
-        checkpoints.at[idx, DONE_COL] = done_this_window
-        checkpoints.at[idx, "is_empty"] = is_empty
-    else:
-        new_row = {
-            "conditionId": condition_id,
-            "offset": offset,
-            "is_empty": is_empty,
-            DONE_COL: done_this_window
-        }
-        checkpoints = pd.concat([checkpoints, pd.DataFrame([new_row])], ignore_index=True)
-
+    checkpoints = checkpoints[checkpoints["conditionId"] != condition_id]
+    checkpoints = pd.concat([checkpoints, pd.DataFrame([row])], ignore_index=True)
     checkpoints.to_csv(CHECKPOINT_FILE, index=False)
 
 print(f"\n✅ Scraping finished. Total rows added: {total_appended}")

@@ -11,11 +11,14 @@ from pathlib import Path
 OUTPUT_COLUMNS = [
     "id",
     "question",
+    "model_text",
     "conditionId",
     "slug",
     "endDate",
     "closedTime"
 ]
+
+REQUIRED_NON_NA = {"id", "closedTime"}
 
 # Hard banned keywords (lowercase)
 BANNED_KEYWORDS = {
@@ -60,8 +63,8 @@ BANNED_KEYWORDS = {
     "crypto", "bitcoin", "ethereum", "solana", "dogecoin", "token", "etf",
     
     # Other
-    "covid", "coronavirus", "weather", "forecast", "musk", "tweet", "chess"
-
+    "covid", "coronavirus", "weather", "musk", "tweet", "chess", "celcius", 
+    
     # English Premier League
     "manchester city", "man city", "liverpool", "arsenal", "manchester united", "man utd", 
     "chelsea", "tottenham", "spurs", "newcastle", "aston villa", "everton", "west ham",
@@ -120,7 +123,7 @@ REGEX_PATTERNS = [
     re.compile(r"\bWho\b.*?\bwin\b.*?\?", re.I),
 ]
 
-REQUIRED_NON_NA = {"id", "closedTime"}
+SENTENCE_SPLIT_REGEX = re.compile(r"(?<=[.!?])\s+")
 
 
 def is_na(val):
@@ -130,24 +133,42 @@ def is_na(val):
     return v in {"", "na", "n/a", "nan", "none", "null"}
 
 
+def first_sentence(text: str) -> str:
+    """
+    Extract the first sentence from description.
+    Falls back gracefully if punctuation is missing.
+    """
+    if not isinstance(text, str):
+        return ""
+
+    text = text.strip()
+    if not text:
+        return ""
+
+    parts = SENTENCE_SPLIT_REGEX.split(text, maxsplit=1)
+    return parts[0].strip()
+
+
 def question_is_banned(question: str) -> bool:
     if not isinstance(question, str):
         return True
 
     q = question.lower()
 
-    # Keyword match
     for kw in BANNED_KEYWORDS:
         if kw in q:
             return True
 
-    # Regex match
     for rx in REGEX_PATTERNS:
         if rx.search(question):
             return True
 
     return False
 
+
+# -----------------------
+# MAIN CLEANER
+# -----------------------
 
 def clean_csv(input_path: Path, output_path: Path):
     counts = {
@@ -188,8 +209,11 @@ def clean_csv(input_path: Path, output_path: Path):
                 counts["dropped_na"] += 1
                 continue
 
+            question = row.get("question", "")
+            description = row.get("description", "")
+
             # Question filter
-            if question_is_banned(row.get("question", "")):
+            if question_is_banned(question):
                 counts["dropped_question_banned"] += 1
                 continue
 
@@ -200,6 +224,17 @@ def clean_csv(input_path: Path, output_path: Path):
                 continue
             seen_ids.add(id_key)
 
+            # ---- NEW LOGIC ----
+            desc_first = first_sentence(description)
+
+            if desc_first:
+                model_text = f"{question}. {desc_first}"
+            else:
+                model_text = question
+
+            row["model_text"] = model_text
+            # -------------------
+
             writer.writerow(row)
             counts["written"] += 1
 
@@ -207,6 +242,10 @@ def clean_csv(input_path: Path, output_path: Path):
     for k, v in counts.items():
         print(f"{k:28}: {v}")
 
+
+# -----------------------
+# CLI
+# -----------------------
 
 if __name__ == "__main__":
     parser = ArgumentParser()
