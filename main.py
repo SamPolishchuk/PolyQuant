@@ -1,9 +1,10 @@
 import csv
-from market_classifier import MarketClassifier
+from classifier import MarketClassifier
+from scripts.clean_markets_insider import clean_insider
 
 WINDOW = [-30, -20]
 
-if __name__ == "__main__":
+def test_market_classifier():
 
     if WINDOW[0] > WINDOW[1]:
         raise ValueError("Invalid WINDOW: start must be less than end.")
@@ -19,3 +20,7 @@ if __name__ == "__main__":
             result = clf.classify(text)
 
             print(row["model_text"], "\n", result, "\n\n")
+
+if __name__ == "__main__":
+
+    clean_insider()

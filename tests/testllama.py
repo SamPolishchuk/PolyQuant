@@ -1,4 +1,4 @@
-from market_classifier import MarketClassifier
+from classifier import MarketClassifier
 import time
 
 start_time = time.perf_counter()

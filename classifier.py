@@ -2,6 +2,7 @@ import numpy as np
 import requests
 from sentence_transformers import SentenceTransformer
 
+# DIRECTIONALITY + MARKET CLASSIFIER 
 
 class MarketClassifier:
     def __init__(
@@ -70,7 +71,7 @@ class MarketClassifier:
         self.category_names = list(self.categories.keys())
         self.category_texts = list(self.categories.values())
 
-        # Precompute category embeddings (ONCE)
+        # Precompute category embeddings
         self.category_embeddings = self.model.encode(
             self.category_texts,
             normalize_embeddings=True,
@@ -94,7 +95,7 @@ class MarketClassifier:
         return False, None, float(best_score)
 
     def ollama_reason(self, text):
-        prompt = """
+        prompt = f"""
 You are a financial reasoning engine.
 
 Rules:
@@ -103,7 +104,7 @@ Rules:
 - Only reason conditionally
 
 Question:
-""", text, """
+{text}
 
 Tasks:
 1. Is this market relevant? (yes/no)
@@ -113,12 +114,12 @@ Tasks:
 
 Output Format:
 Respond in strict JSON only. Follow this exact schema:
-{
+{{
   "relevant": boolean,
   "impacted_markets": ["Oil", "FX", "Rates", "Equities", "Volatility"],
-  "conditional_impact": "String describing direction (e.g., 'Rates up, Equities down')",
+  "conditional_impact": "String describing direction",
   "risk_sentiment": "risk-on" | "risk-off"
-}
+}}
 """
 
         response = requests.post(
@@ -154,5 +155,83 @@ Respond in strict JSON only. Follow this exact schema:
             "stage": "llm_reasoning",
             "embedding_category": category,
             "embedding_score": score,
+            "llm_analysis": llm_output
+        }
+
+
+# INSIDER-TRADABILITY CLASSIFIER
+
+class InsiderTradabilityClassifier:
+    """
+    Determines whether a market question is realistically insider-tradable
+    due to private information, limited observers, or pre-announcement leakage.
+    """
+
+    def __init__(
+        self,
+        ollama_model="llama3:8b-instruct-q4_K_M",
+        ollama_url="http://localhost:11434/api/generate"
+    ):
+        self.ollama_model = ollama_model
+        self.ollama_url = ollama_url
+
+    def ollama_reason(self, text):
+        prompt = f"""
+You are an expert in market microstructure and information asymmetry.
+
+Task:
+Determine whether this prediction market could be insider-traded.
+
+Definition:
+A market is insider-tradable if ANY small, identifiable group or individual could
+possess material non-public information BEFORE the outcome becomes public.
+
+Key principles:
+- Private or closed-door decisions INCREASE insider tradability.
+- Discrete decisions with a fixed announcement time are often insider-tradable.
+- Affiliation matters: advisors, executives, staff, family, lawyers, regulators.
+- Do NOT assess likelihood or probability.
+- Do NOT use historical facts.
+
+Output rules:
+- Reason only about information structure.
+- If any non-JSON text is output, the answer is INVALID.
+- Do NOT include explanations, preambles, or commentary.
+
+Question:
+"{text}"
+
+Answer:
+1. Is insider trading structurally possible? (yes/no)
+2. Why? (who could know early?)
+
+Output STRICT JSON only:
+{{
+  "insider_tradable": boolean,
+  "reasoning": "5 word explanation"
+}}
+"""
+
+        response = requests.post(
+            self.ollama_url,
+            json={
+                "model": self.ollama_model,
+                "prompt": prompt,
+                "stream": False,
+                "options": {
+                    "temperature": 0.0,
+                    "num_predict": 200
+                }
+            },
+            timeout=60
+        )
+
+        return response.json()["response"]
+
+    def classify(self, text):
+        llm_output = self.ollama_reason(text)
+
+        return {
+            "stage": "insider_tradability",
             "llm_analysis": llm_output
         }

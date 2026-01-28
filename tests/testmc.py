@@ -1,4 +1,4 @@
-from market_classifier import MarketClassifier
+from classifier import MarketClassifier
 
 classifier = MarketClassifier(threshold=0.40)
 

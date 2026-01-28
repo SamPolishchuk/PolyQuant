@@ -4,9 +4,7 @@ import sys
 import re
 from pathlib import Path
 
-# -----------------------
 # CONFIG
-# -----------------------
 
 OUTPUT_COLUMNS = [
     "id",
@@ -20,7 +18,6 @@ OUTPUT_COLUMNS = [
 
 REQUIRED_NON_NA = {"id", "closedTime"}
 
-# Hard banned keywords (lowercase)
 BANNED_KEYWORDS = {
     # General Events & Leagues
     "world cup", "championship", "champions", "super bowl", "olympics", "milano cortina",
@@ -64,7 +61,7 @@ BANNED_KEYWORDS = {
     
     # Other
     "covid", "coronavirus", "weather", "musk", "tweet", "chess", "celcius", 
-    
+
     # English Premier League
     "manchester city", "man city", "liverpool", "arsenal", "manchester united", "man utd", 
     "chelsea", "tottenham", "spurs", "newcastle", "aston villa", "everton", "west ham",
@@ -121,6 +118,10 @@ REGEX_PATTERNS = [
 
     # Bonus: Captures "Who will win: [Team] or [Team]?"
     re.compile(r"\bWho\b.*?\bwin\b.*?\?", re.I),
+
+    # \bWill\b.*?\b(say|mention)\b -> Matches "Will" then "say/mention"
+    # \s*['"](.*?)['"] -> Matches the quoted part (non-greedy)
+    re.compile(r"\bWill\b.*?\b(say|mention)\b\s*['\"](.*?)['\"]\b.*?\?", re.I),
 ]
 
 SENTENCE_SPLIT_REGEX = re.compile(r"(?<=[.!?])\s+")
@@ -166,9 +167,7 @@ def question_is_banned(question: str) -> bool:
     return False
 
 
-# -----------------------
 # MAIN CLEANER
-# -----------------------
 
 def clean_csv(input_path: Path, output_path: Path):
     counts = {
@@ -224,7 +223,6 @@ def clean_csv(input_path: Path, output_path: Path):
                 continue
             seen_ids.add(id_key)
 
-            # ---- NEW LOGIC ----
             desc_first = first_sentence(description)
 
             if desc_first:
@@ -233,7 +231,6 @@ def clean_csv(input_path: Path, output_path: Path):
                 model_text = question
 
             row["model_text"] = model_text
-            # -------------------
 
             writer.writerow(row)
             counts["written"] += 1
@@ -243,9 +240,7 @@ def clean_csv(input_path: Path, output_path: Path):
         print(f"{k:28}: {v}")
 
 
-# -----------------------
 # CLI
-# -----------------------
 
 if __name__ == "__main__":
     parser = ArgumentParser()

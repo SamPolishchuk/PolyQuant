@@ -3,6 +3,7 @@ import pandas as pd
 import time
 import os
 from datetime import timedelta
+import json
 
 # CONFIG
 
@@ -10,7 +11,7 @@ TRADES_URL = "https://data-api.polymarket.com/trades"
 USER_VALUE_URL = "https://data-api.polymarket.com/value"
 USER_TRADED_URL = "https://data-api.polymarket.com/traded"
 
-MARKET_FILE = "data/market_ids_filtered.csv"
+MARKET_FILE = "data/market_ids_insider_only.csv"
 CHECKPOINT_FILE = "data/trade_checkpoints.csv"
 
 WINDOW_HOURS = 24
@@ -22,6 +23,8 @@ MIN_RECENT_TRADES = 10          # recent liquidity threshold
 MIN_LIFETIME_TRADES = 50        # structural market filter
 SLEEP_SECONDS = 0.5
 TIMEOUT = 30
+
+iteration_counter = 0
 
 # HELPERS
 
@@ -60,6 +63,23 @@ def get_user_stats(wallet):
     USER_CACHE[wallet] = stats
     return stats
 
+def log_csv_status(csv_path):
+    if not os.path.exists(csv_path):
+        print("    📄 CSV does not exist yet.")
+        return
+
+    try:
+        df_tail = pd.read_csv(csv_path, usecols=["timestamp"])
+        total_rows = len(df_tail)
+        last_ts = pd.to_datetime(df_tail["timestamp"].iloc[-1], utc=True)
+
+        print(f"    📊 CSV rows: {total_rows:,}")
+        print(f"    🕒 Last appended trade: {last_ts}")
+
+    except Exception as e:
+        print(f"    ⚠ Could not read CSV status: {e}")
+
+
 # CHECKPOINT HANDLING
 
 if os.path.exists(CHECKPOINT_FILE):
@@ -78,7 +98,6 @@ done_ids = set(checkpoints.loc[checkpoints[DONE_COL], "conditionId"])
 
 markets_df = pd.read_csv(MARKET_FILE)
 markets_df = markets_df[~markets_df["conditionId"].isin(dead_ids | done_ids)]
-
 markets_df["closedTime"] = pd.to_datetime(markets_df["closedTime"], utc=True, errors="coerce")
 markets_df = markets_df.dropna(subset=["closedTime"])
 
@@ -91,16 +110,16 @@ print(f"✅ Ready to process {len(markets_df)} markets.")
 total_appended = 0
 
 for _, market in markets_df.iterrows():
-    condition_id = market["conditionId"]
+    question = market["question"]
     close_time = market["closedTime"]
+    condition_id = market["conditionId"]
     cutoff_time = close_time - timedelta(hours=WINDOW_HOURS)
 
-    print(f"\n▶ Market {condition_id}")
+    print(f"\n▶ Market: {question}")
 
     offset = 0
     done_this_window = False
     structurally_dead = False
-    low_recent_liquidity = False
 
     while True:
         time.sleep(SLEEP_SECONDS)
@@ -116,7 +135,16 @@ for _, market in markets_df.iterrows():
 
             if not data:
                 done_this_window = True
+                if offset == 0:
+                    print("  No data available. Set done_this_window = True")
                 break
+
+            iteration_counter += 1
+
+            if iteration_counter % 50 == 0:
+                print("\n🔎 Progress checkpoint")
+                log_csv_status(TRADES_CSV)
+
 
             df = pd.DataFrame(data)
             df["timestamp"] = parse_timestamp(df["timestamp"])
@@ -131,11 +159,6 @@ for _, market in markets_df.iterrows():
 
             keep = df[df["timestamp"] >= cutoff_time].copy()
 
-            if offset == 0:
-                low_recent_liquidity = len(keep) < MIN_RECENT_TRADES
-                if low_recent_liquidity:
-                    print(f"  ⚠ Low recent liquidity: {len(keep)} trades in last {WINDOW_HOURS}h")
-
             if not keep.empty:
                 users = keep["proxyWallet"].unique()
                 user_map = {u: get_user_stats(u) for u in users}
@@ -143,7 +166,6 @@ for _, market in markets_df.iterrows():
                 keep["user_total_value"] = keep["proxyWallet"].map(lambda x: user_map[x]["user_total_value"])
                 keep["user_total_trades"] = keep["proxyWallet"].map(lambda x: user_map[x]["user_total_trades"])
                 keep["conditionId"] = condition_id
-                keep["low_recent_liquidity"] = low_recent_liquidity
 
                 append_to_csv(keep, TRADES_CSV)
                 total_appended += len(keep)
