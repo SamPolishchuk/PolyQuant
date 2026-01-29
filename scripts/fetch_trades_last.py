@@ -3,7 +3,6 @@ import pandas as pd
 import time
 import os
 from datetime import timedelta
-import json
 
 # CONFIG
 
@@ -14,15 +13,16 @@ USER_TRADED_URL = "https://data-api.polymarket.com/traded"
 MARKET_FILE = "data/market_ids_insider_only.csv"
 CHECKPOINT_FILE = "data/trade_checkpoints.csv"
 
-WINDOW_HOURS = 24
-TRADES_CSV = f"data/trades_last_{WINDOW_HOURS}h.csv"
-DONE_COL = f"done_{WINDOW_HOURS}h"
-
 LIMIT = 100
-MIN_RECENT_TRADES = 10          # recent liquidity threshold
-MIN_LIFETIME_TRADES = 50        # structural market filter
+MIN_LIFETIME_TRADES = 10
+MIN_TRADES_HOURS = 5
+MIN_TRADE_VOLUME = {"filterType": "CASH", "filterAmount": 1000}
 SLEEP_SECONDS = 0.5
 TIMEOUT = 30
+
+WINDOW_HOURS = 48
+TRADES_CSV = f"data/trades_last_{WINDOW_HOURS}h_min_{MIN_TRADE_VOLUME['filterAmount']}.csv"
+DONE_COL = f"done_{WINDOW_HOURS}h_{MIN_TRADE_VOLUME['filterAmount']}"
 
 iteration_counter = 0
 
@@ -127,7 +127,7 @@ for _, market in markets_df.iterrows():
         try:
             r = requests.get(
                 TRADES_URL,
-                params={"limit": LIMIT, "offset": offset, "market": condition_id},
+                params={"limit": LIMIT, "offset": offset, "market": condition_id, "filterType": MIN_TRADE_VOLUME['filterType'], "filterAmount": MIN_TRADE_VOLUME['filterAmount']},
                 timeout=TIMEOUT
             )
             r.raise_for_status()
@@ -136,7 +136,8 @@ for _, market in markets_df.iterrows():
             if not data:
                 done_this_window = True
                 if offset == 0:
-                    print("  No data available. Set done_this_window = True")
+                    print(f"  No data available for trades greater than {MIN_TRADE_VOLUME['filterAmount']}. Set done_this_window = True")
+                    structurally_dead = True
                 break
 
             iteration_counter += 1
@@ -160,6 +161,14 @@ for _, market in markets_df.iterrows():
             keep = df[df["timestamp"] >= cutoff_time].copy()
 
             if not keep.empty:
+
+                if len(keep) < MIN_TRADES_HOURS:
+                    if offset == 0:
+                        print(f"    ! Only {len(keep)} trades in the last {WINDOW_HOURS}h (<{MIN_TRADES_HOURS}). Skipping these trades.")
+                        structurally_dead = True
+                        done_this_window = True
+                        break
+
                 users = keep["proxyWallet"].unique()
                 user_map = {u: get_user_stats(u) for u in users}
 
@@ -170,10 +179,12 @@ for _, market in markets_df.iterrows():
                 append_to_csv(keep, TRADES_CSV)
                 total_appended += len(keep)
 
-                print(f"    Added {len(keep)} trades")
+                print(f"    Added {len(keep)} trades greater than {MIN_TRADE_VOLUME['filterAmount']}.")
 
             if df["timestamp"].min() <= cutoff_time:
                 done_this_window = True
+                if keep.empty and offset == 0:
+                    print(f"  No more trades in the last {WINDOW_HOURS}h. Set done_this_window = True")
                 break
 
             offset += LIMIT
