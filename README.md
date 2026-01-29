@@ -1,0 +1,16 @@
+We want to use Polymarket to make abnormal positive returns in established financial markets. 
+We wish to explore and backtest the following ideas: 
+    1. Insiders: ML model to exploit insider trading on Polymarket.
+    2. Probabilities: Use Polymarket probabilities to update current beliefs, e.g. Volatility Forecast.
+
+1. Insiders
+    a. Calibrate model that detects insider trading in Polymarket.
+    b. Make NLP model that chooses relevant Polymarket conditionIds associated with the instrument of interest.
+    c. Scan the market on a rolling window to detect insiders in relevant markets.
+    d. Make trades on the instrument of interest once insider detected. 
+
+2. Probabilities
+
+    a. NLP
+
+Can be used with the first one to build volatility predictions. Use Polymarket probabilities as a 'long-run expectation', and then use the insider trading for intraday trading.
