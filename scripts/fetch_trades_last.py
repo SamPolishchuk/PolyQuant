@@ -4,6 +4,10 @@ import time
 import os
 from datetime import timedelta
 
+"""
+MAKE THE DATES FIXES
+"""
+
 # CONFIG
 
 TRADES_URL = "https://data-api.polymarket.com/trades"
@@ -81,127 +85,134 @@ def log_csv_status(csv_path):
 
 
 # CHECKPOINT HANDLING
+if "__name__"=="__main__":
+        
+    if os.path.exists(CHECKPOINT_FILE):
+        checkpoints = pd.read_csv(CHECKPOINT_FILE)
+    else:
+        checkpoints = pd.DataFrame(columns=["conditionId", "is_structurally_dead", DONE_COL])
 
-if os.path.exists(CHECKPOINT_FILE):
-    checkpoints = pd.read_csv(CHECKPOINT_FILE)
-else:
-    checkpoints = pd.DataFrame(columns=["conditionId", "is_structurally_dead", DONE_COL])
+    for col in ["is_structurally_dead", DONE_COL]:
+        if col not in checkpoints.columns:
+            checkpoints[col] = False
 
-for col in ["is_structurally_dead", DONE_COL]:
-    if col not in checkpoints.columns:
-        checkpoints[col] = False
+    dead_ids = set(checkpoints.loc[checkpoints["is_structurally_dead"], "conditionId"])
+    done_ids = set(checkpoints.loc[checkpoints[DONE_COL], "conditionId"])
 
-dead_ids = set(checkpoints.loc[checkpoints["is_structurally_dead"], "conditionId"])
-done_ids = set(checkpoints.loc[checkpoints[DONE_COL], "conditionId"])
+    # LOAD MARKETS
 
-# LOAD MARKETS
+    markets_df = pd.read_csv(MARKET_FILE)
+    markets_df = markets_df[~markets_df["conditionId"].isin(dead_ids | done_ids)]
+    markets_df["closedTime"] = pd.to_datetime(markets_df["closedTime"], utc=True, errors="coerce")
+    markets_df = markets_df.dropna(subset=["closedTime"])
 
-markets_df = pd.read_csv(MARKET_FILE)
-markets_df = markets_df[~markets_df["conditionId"].isin(dead_ids | done_ids)]
-markets_df["closedTime"] = pd.to_datetime(markets_df["closedTime"], utc=True, errors="coerce")
-markets_df = markets_df.dropna(subset=["closedTime"])
+    print(f"✅ Target File: {TRADES_CSV}")
+    print(f"✅ Tracking via column: {DONE_COL}")
+    print(f"✅ Ready to process {len(markets_df)} markets.")
 
-print(f"✅ Target File: {TRADES_CSV}")
-print(f"✅ Tracking via column: {DONE_COL}")
-print(f"✅ Ready to process {len(markets_df)} markets.")
+    # MAIN LOOP
 
-# MAIN LOOP
+    total_appended = 0
 
-total_appended = 0
+    for _, market in markets_df.iterrows():
+        question = market["question"]
+        close_time = market["closedTime"]
+        end_time = market["endDate"]
+        condition_id = market["conditionId"]
+        early = True
 
-for _, market in markets_df.iterrows():
-    question = market["question"]
-    close_time = market["closedTime"]
-    condition_id = market["conditionId"]
-    cutoff_time = close_time - timedelta(hours=WINDOW_HOURS)
+        if close_time > end_time:
+            close_time = end_time
+            early = False
 
-    print(f"\n▶ Market: {question}")
+        cutoff_time = close_time - timedelta(hours=WINDOW_HOURS)
 
-    offset = 0
-    done_this_window = False
-    structurally_dead = False
+        print(f"\n▶ Market: {question}")
 
-    while True:
-        time.sleep(SLEEP_SECONDS)
+        offset = 0
+        done_this_window = False
+        structurally_dead = False
 
-        try:
-            r = requests.get(
-                TRADES_URL,
-                params={"limit": LIMIT, "offset": offset, "market": condition_id, "filterType": MIN_TRADE_VOLUME['filterType'], "filterAmount": MIN_TRADE_VOLUME['filterAmount']},
-                timeout=TIMEOUT
-            )
-            r.raise_for_status()
-            data = r.json()
+        while True:
+            time.sleep(SLEEP_SECONDS)
 
-            if not data:
-                done_this_window = True
-                if offset == 0:
-                    print(f"  No data available for trades greater than {MIN_TRADE_VOLUME['filterAmount']}. Set done_this_window = True")
-                    structurally_dead = True
-                break
+            try:
+                r = requests.get(
+                    TRADES_URL,
+                    params={"limit": LIMIT, "offset": offset, "market": condition_id, "filterType": MIN_TRADE_VOLUME['filterType'], "filterAmount": MIN_TRADE_VOLUME['filterAmount']},
+                    timeout=TIMEOUT
+                )
+                r.raise_for_status()
+                data = r.json()
 
-            iteration_counter += 1
-
-            if iteration_counter % 50 == 0:
-                print("\n🔎 Progress checkpoint")
-                log_csv_status(TRADES_CSV)
-
-
-            df = pd.DataFrame(data)
-            df["timestamp"] = parse_timestamp(df["timestamp"])
-
-            # TRADE-HISTORY AT LEAST 50 TRANSACTIONS
-            if offset == 0:
-                if len(data) < MIN_LIFETIME_TRADES:
-                    print(f"  ! Only {len(data)} lifetime trades (<{MIN_LIFETIME_TRADES}). Dropping market.")
-                    structurally_dead = True
+                if not data:
                     done_this_window = True
+                    if offset == 0:
+                        print(f"  No data available for trades greater than {MIN_TRADE_VOLUME['filterAmount']}. Set done_this_window = True")
+                        structurally_dead = True
                     break
 
-            keep = df[df["timestamp"] >= cutoff_time].copy()
+                iteration_counter += 1
 
-            if not keep.empty:
+                if iteration_counter % 50 == 0:
+                    print("\n🔎 Progress checkpoint")
+                    log_csv_status(TRADES_CSV)
 
-                if len(keep) < MIN_TRADES_HOURS:
-                    if offset == 0:
-                        print(f"    ! Only {len(keep)} trades in the last {WINDOW_HOURS}h (<{MIN_TRADES_HOURS}). Skipping these trades.")
+
+                df = pd.DataFrame(data)
+                df["timestamp"] = parse_timestamp(df["timestamp"])
+                # TRADE-HISTORY AT LEAST 50 TRANSACTIONS
+                if offset == 0:
+                    if len(data) < MIN_LIFETIME_TRADES:
+                        print(f"  ! Only {len(data)} lifetime trades (<{MIN_LIFETIME_TRADES}). Dropping market.")
                         structurally_dead = True
                         done_this_window = True
                         break
 
-                users = keep["proxyWallet"].unique()
-                user_map = {u: get_user_stats(u) for u in users}
+                keep = df[df["timestamp"] >= cutoff_time].copy()
 
-                keep["user_total_value"] = keep["proxyWallet"].map(lambda x: user_map[x]["user_total_value"])
-                keep["user_total_trades"] = keep["proxyWallet"].map(lambda x: user_map[x]["user_total_trades"])
-                keep["conditionId"] = condition_id
+                if not keep.empty:
 
-                append_to_csv(keep, TRADES_CSV)
-                total_appended += len(keep)
+                    if len(keep) < MIN_TRADES_HOURS:
+                        if offset == 0:
+                            print(f"    ! Only {len(keep)} trades in the last {WINDOW_HOURS}h (<{MIN_TRADES_HOURS}). Skipping these trades.")
+                            structurally_dead = True
+                            done_this_window = True
+                            break
 
-                print(f"    Added {len(keep)} trades greater than {MIN_TRADE_VOLUME['filterAmount']}.")
+                    users = keep["proxyWallet"].unique()
+                    user_map = {u: get_user_stats(u) for u in users}
 
-            if df["timestamp"].min() <= cutoff_time:
-                done_this_window = True
-                if keep.empty and offset == 0:
-                    print(f"  No more trades in the last {WINDOW_HOURS}h. Set done_this_window = True")
-                break
+                    keep["user_total_value"] = keep["proxyWallet"].map(lambda x: user_map[x]["user_total_value"])
+                    keep["user_total_trades"] = keep["proxyWallet"].map(lambda x: user_map[x]["user_total_trades"])
+                    keep["conditionId"] = condition_id
 
-            offset += LIMIT
+                    append_to_csv(keep, TRADES_CSV)
+                    total_appended += len(keep)
 
-        except Exception as e:
-            print(f"  Error: {e}")
-            time.sleep(5)
+                    print(f"    Added {len(keep)} trades greater than {MIN_TRADE_VOLUME['filterAmount']}.")
 
-    # UPDATE CHECKPOINTS
-    row = {
-        "conditionId": condition_id,
-        "is_structurally_dead": structurally_dead,
-        DONE_COL: done_this_window
-    }
+                if df["timestamp"].min() <= cutoff_time:
+                    done_this_window = True
+                    if keep.empty and offset == 0:
+                        print(f"  No more trades in the last {WINDOW_HOURS}h. Set done_this_window = True")
+                    break
 
-    checkpoints = checkpoints[checkpoints["conditionId"] != condition_id]
-    checkpoints = pd.concat([checkpoints, pd.DataFrame([row])], ignore_index=True)
-    checkpoints.to_csv(CHECKPOINT_FILE, index=False)
+                offset += LIMIT
 
-print(f"\n✅ Scraping finished. Total rows added: {total_appended}")
+            except Exception as e:
+                print(f"  Error: {e}")
+                time.sleep(5)
+
+        # UPDATE CHECKPOINTS
+        row = {
+            "conditionId": condition_id,
+            "is_structurally_dead": structurally_dead,
+            DONE_COL: done_this_window
+        }
+
+        checkpoints = checkpoints[checkpoints["conditionId"] != condition_id]
+        checkpoints = pd.concat([checkpoints, pd.DataFrame([row])], ignore_index=True)
+        checkpoints.to_csv(CHECKPOINT_FILE, index=False)
+
+    print(f"\n✅ Scraping finished. Total rows added: {total_appended}")
