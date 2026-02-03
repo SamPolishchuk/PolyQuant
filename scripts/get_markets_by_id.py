@@ -19,6 +19,8 @@ KEEP_COLS = [
     "id",
     "question",
     "model_text",
+    "outcomes",
+    "outcomePrices",
     "conditionId",
     "slug",
     "endDate",
