@@ -8,7 +8,7 @@ import os
 # ======================================================
 
 MARKETS_URL = "https://gamma-api.polymarket.com/markets"
-MARKET_IDS =["0xc25e15f39f776813870ee363ed483451add1c55dad163b18bdb2df653be2c90c", "0x580adc1327de9bf7c179ef5aaffa3377bb5cb252b7d6390b027172d43fd6f993", "0x7f39808829da93cfd189807f13f6d86a0e604835e6f9482d8094fac46b3abaac"]
+MARKET_IDS =["0xc25e15f39f776813870ee363ed483451add1c55dad163b18bdb2df653be2c90c", "0x580adc1327de9bf7c179ef5aaffa3377bb5cb252b7d6390b027172d43fd6f993", "0x7f39808829da93cfd189807f13f6d86a0e604835e6f9482d8094fac46b3abaac", "0xea17b1284d10617a57f910b2ea63bdef481b1724a4b899d454ff104bea67b657"]
 
 OUTPUT_FILE = r"C:\Users\2same\Economics BSc\Quant\PolyQuant\data\poc_markets.csv"
 
