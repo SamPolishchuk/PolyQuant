@@ -11,8 +11,21 @@ We wish to explore and backtest the following ideas:
 
 2. Probabilities
 
-    a. NLP
+We use the Black-Letterman QEPM portfolio structure to update our beliefs on certain securities that we hold.
 
+    a. We first select our securities using z-scores on momentum.
+    b. We find the covariance matrix (sigma) with Pearson's cov matrix (shrinkage preferred) and expected returns (mu) using
+        i. Current market protfolio: μ= λΣw
+        ii. Fama-French 3F: Essentially arguing the market is somewhat inefficient, and factors explain equilibrium better​
+    c. Find the relevant events for these securities, and their associated probabilities on Polymarket.
+    d. Somehow aggregate these (or select a range of them) that will be inputed in the views matrices:
+        i. Q (view vector): Q=E[r∣event]−E[r], where Expected return impact=P(event)×β_{asset,event}​×shock magnitude; Eg. “If Israel strikes Iran, defense stocks +5%, airlines −3%”
+        ii. Omega (uncertainty): (σ_asset)^2 × f(time to resolution)×g(liquidity), e.g. Omega = sigma^2 * (T/T_max)
+        iii. P (asset exposure matrix): assets involved in the view (weighted with )
+        iv. Tau (uncertainty in the prior mu): between 0.1 and 0.05
+    e. Rebalance weekly, and if we detect an insider trader
+
+Overall:
 Can be used with the first one to build volatility predictions. Use Polymarket probabilities as a 'long-run expectation', and then use the insider trading for intraday trading.
 
 Assumptions:

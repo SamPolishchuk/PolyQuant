@@ -20,7 +20,7 @@ CHECKPOINT_FILE = "data/trade_checkpoints.csv"
 LIMIT = 100
 MIN_LIFETIME_TRADES = 10
 MIN_TRADES_HOURS = 5
-MIN_TRADE_VOLUME = {"filterType": "CASH", "filterAmount": 1000}
+MIN_TRADE_VOLUME = None # {"filterType": "CASH", "filterAmount": 1000}
 SLEEP_SECONDS = 0.5
 TIMEOUT = 30
 
@@ -132,16 +132,25 @@ if "__name__"=="__main__":
         offset = 0
         done_this_window = False
         structurally_dead = False
+        last_page_signature = None
 
         while True:
             time.sleep(SLEEP_SECONDS)
 
             try:
-                r = requests.get(
-                    TRADES_URL,
-                    params={"limit": LIMIT, "offset": offset, "market": condition_id, "filterType": MIN_TRADE_VOLUME['filterType'], "filterAmount": MIN_TRADE_VOLUME['filterAmount']},
-                    timeout=TIMEOUT
-                )
+                if MIN_TRADE_VOLUME is not None:
+                    r = requests.get(
+                        TRADES_URL,
+                        params={"limit": LIMIT, "offset": offset, "market": condition_id, "filterType": MIN_TRADE_VOLUME['filterType'], "filterAmount": MIN_TRADE_VOLUME['filterAmount']},
+                        timeout=TIMEOUT
+                    )
+                else:
+                    r = requests.get(
+                        TRADES_URL,
+                        params={"limit": LIMIT, "offset": offset, "market": condition_id},
+                        timeout=TIMEOUT
+                    )
+        
                 r.raise_for_status()
                 data = r.json()
 
@@ -154,10 +163,21 @@ if "__name__"=="__main__":
 
                 iteration_counter += 1
 
+                page_signature = (
+                    df["proxyWallet"].iloc[-1],
+                    df["timestamp"].iloc[-1],
+                    len(df),
+                )
+
+                if last_page_signature == page_signature:
+                    print("   🔁 Repeated page detected — terminating market")
+                    break
+
+                last_page_signature = page_signature
+
                 if iteration_counter % 50 == 0:
                     print("\n🔎 Progress checkpoint")
                     log_csv_status(TRADES_CSV)
-
 
                 df = pd.DataFrame(data)
                 df["timestamp"] = parse_timestamp(df["timestamp"])
