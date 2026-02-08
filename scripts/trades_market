@@ -1,0 +1,466 @@
+
+
+import argparse
+import json
+import os
+import time
+from typing import Any, Dict, List, Optional, Tuple
+
+import pandas as pd
+import requests
+
+DEFAULT_ENDPOINT = (
+    "https://api.goldsky.com/api/public/project_cl6mb8i9h0003e201j6li0diw/"
+    "subgraphs/activity-subgraph/0.0.4/gn"
+)
+
+TIMEOUT = 30
+
+
+# ---------------- GraphQL low-level ----------------
+
+def gql_post(session: requests.Session, endpoint: str, query: str, variables: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    r = session.post(endpoint, json={"query": query, "variables": variables or {}}, timeout=TIMEOUT)
+    r.raise_for_status()
+    payload = r.json()
+    if "errors" in payload:
+        msg = json.dumps(payload["errors"][:3], indent=2)
+        raise RuntimeError(f"GraphQL errors:\n{msg}")
+    return payload["data"]
+
+
+def unwrap_type(t: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Introspection types are nested like NON_NULL -> LIST -> SCALAR, etc.
+    Returns dict with base_name, is_list, is_non_null.
+    """
+    is_list = False
+    is_non_null = False
+    cur = t
+    while cur and cur.get("kind") in ("NON_NULL", "LIST"):
+        if cur["kind"] == "NON_NULL":
+            is_non_null = True
+        if cur["kind"] == "LIST":
+            is_list = True
+        cur = cur.get("ofType")
+    return {
+        "base_kind": cur.get("kind") if cur else None,
+        "base_name": cur.get("name") if cur else None,
+        "is_list": is_list,
+        "is_non_null": is_non_null,
+    }
+
+
+def type_to_gql(t: Dict[str, Any], force_non_null: bool = True) -> str:
+    """
+    Convert introspection type node to a GraphQL variable type string (best-effort).
+    We only need scalar-ish inputs (Bytes, ID, String, BigInt, Int, Boolean).
+    """
+    u = unwrap_type(t)
+    base = u["base_name"] or "String"
+    if u["is_list"]:
+        base = f"[{base}]"
+    if force_non_null:
+        base = f"{base}!"
+    return base
+
+
+# ---------------- Schema discovery ----------------
+
+INTROSPECT_QUERY_FIELDS = """
+query IntrospectQueryFields {
+  __schema {
+    queryType {
+      fields {
+        name
+        args {
+          name
+          type { kind name ofType { kind name ofType { kind name ofType { kind name } } } }
+        }
+        type { kind name ofType { kind name ofType { kind name } } }
+      }
+    }
+  }
+}
+"""
+
+def get_query_fields(session: requests.Session, endpoint: str) -> List[Dict[str, Any]]:
+    data = gql_post(session, endpoint, INTROSPECT_QUERY_FIELDS)
+    return data["__schema"]["queryType"]["fields"]
+
+
+def pick_trade_root_field(query_fields: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Heuristic: choose a root field that looks like a list of fills/trades.
+    We prefer ones that accept a `where` arg and a `first` arg.
+    """
+    def score(f: Dict[str, Any]) -> int:
+        name = f["name"].lower()
+        args = {a["name"] for a in (f.get("args") or [])}
+        s = 0
+        if any(k in name for k in ["trade", "fill", "orderfilled", "order_filled"]):
+            s += 50
+        if "where" in args:
+            s += 20
+        if "first" in args:
+            s += 10
+        if "orderBy" in args:
+            s += 5
+        # prefer plural list-like names
+        if name.endswith("s") or name.endswith("events"):
+            s += 3
+        return s
+
+    candidates = sorted(query_fields, key=score, reverse=True)
+    best = candidates[0]
+    if score(best) < 30:
+        raise RuntimeError(
+            "Couldn't confidently find a trade-like root field. "
+            "Re-run with --debug-schema to inspect available root fields."
+        )
+    return best
+
+
+def get_type_fields(session: requests.Session, endpoint: str, type_name: str) -> List[Dict[str, Any]]:
+    q = """
+    query TypeFields($name: String!) {
+      __type(name: $name) {
+        fields {
+          name
+          type { kind name ofType { kind name ofType { kind name } } }
+        }
+      }
+    }
+    """
+    data = gql_post(session, endpoint, q, {"name": type_name})
+    t = data.get("__type")
+    if not t or not t.get("fields"):
+        return []
+    return t["fields"]
+
+
+def get_input_fields(session: requests.Session, endpoint: str, input_name: str) -> List[Dict[str, Any]]:
+    q = """
+    query InputFields($name: String!) {
+      __type(name: $name) {
+        inputFields {
+          name
+          type { kind name ofType { kind name ofType { kind name } } }
+        }
+      }
+    }
+    """
+    data = gql_post(session, endpoint, q, {"name": input_name})
+    t = data.get("__type")
+    if not t or not t.get("inputFields"):
+        return []
+    return t["inputFields"]
+
+
+def get_enum_values(session: requests.Session, endpoint: str, enum_name: str) -> List[str]:
+    q = """
+    query EnumVals($name: String!) {
+      __type(name: $name) {
+        enumValues { name }
+      }
+    }
+    """
+    data = gql_post(session, endpoint, q, {"name": enum_name})
+    t = data.get("__type")
+    if not t or not t.get("enumValues"):
+        return []
+    return [x["name"] for x in t["enumValues"]]
+
+
+def discover_trade_access(session: requests.Session, endpoint: str) -> Dict[str, Any]:
+    """
+    Discovers:
+      - root field name (e.g., orderFilledEvents)
+      - where input type name
+      - return entity type name
+      - orderBy enum + best order key
+      - filter keys available (conditionId/market/tokenId etc.)
+      - cursor field support (id_gt preferred)
+      - reasonable selection set fields
+    """
+    qfields = get_query_fields(session, endpoint)
+    root = pick_trade_root_field(qfields)
+
+    root_name = root["name"]
+    root_args = {a["name"]: a for a in (root.get("args") or [])}
+
+    if "where" not in root_args or "first" not in root_args:
+        raise RuntimeError(f"Root field '{root_name}' doesn't look pageable (missing where/first).")
+
+    where_type = unwrap_type(root_args["where"]["type"])["base_name"]
+    if not where_type:
+        raise RuntimeError(f"Couldn't resolve where-input type for '{root_name}'.")
+
+    # Return type: usually LIST of Entity
+    ret_base = unwrap_type(root["type"])["base_name"]
+    if not ret_base:
+        raise RuntimeError(f"Couldn't resolve return type for '{root_name}'.")
+
+    # Determine orderBy options
+    order_by_key = None
+    order_by_enum = None
+    if "orderBy" in root_args:
+        order_by_enum = unwrap_type(root_args["orderBy"]["type"])["base_name"]
+        enum_vals = get_enum_values(session, endpoint, order_by_enum) if order_by_enum else []
+        # Prefer id ordering (stable cursor), else timestamp, else first enum val
+        for pref in ["id", "timestamp", "time", "blockNumber", "logIndex"]:
+            if pref in enum_vals:
+                order_by_key = pref
+                break
+        if order_by_key is None and enum_vals:
+            order_by_key = enum_vals[0]
+
+    # Input fields in where
+    where_fields = get_input_fields(session, endpoint, where_type)
+    where_field_map = {f["name"]: f for f in where_fields}
+
+    # Cursor preference: id_gt if exists; else timestamp_gt/gte if exists
+    cursor_mode = None
+    cursor_field = None
+    if "id_gt" in where_field_map:
+        cursor_mode = "id"
+        cursor_field = "id_gt"
+    elif "timestamp_gt" in where_field_map:
+        cursor_mode = "timestamp"
+        cursor_field = "timestamp_gt"
+    elif "timestamp_gte" in where_field_map:
+        cursor_mode = "timestamp"
+        cursor_field = "timestamp_gte"
+    else:
+        raise RuntimeError(
+            f"'{where_type}' has no id_gt or timestamp_gt/gte. "
+            "Run --debug-schema to inspect where fields."
+        )
+
+    # Market filter preference (best case is conditionId)
+    market_filter_key = None
+    for pref in ["conditionId", "condition", "market", "marketId", "tokenId", "outcomeToken", "outcomeTokenId"]:
+        if pref in where_field_map:
+            market_filter_key = pref
+            break
+
+    # Build a safe selection set based on available fields on the entity
+    entity_fields = get_type_fields(session, endpoint, ret_base)
+    ef_map = {f["name"]: f for f in entity_fields}
+
+    scalar_like = []
+    object_like = []
+
+    for name, f in ef_map.items():
+        kind = unwrap_type(f["type"])["base_kind"]
+        if kind in ("SCALAR", "ENUM"):
+            scalar_like.append(name)
+        elif kind == "OBJECT":
+            object_like.append(name)
+
+    desired_scalars = ["id", "timestamp", "price", "size", "side", "maker", "taker", "trader", "txHash", "transactionHash", "amount"]
+    selection_scalars = [x for x in desired_scalars if x in scalar_like]
+    if "id" not in selection_scalars and "id" in ef_map:
+        selection_scalars.insert(0, "id")
+    if "timestamp" not in selection_scalars and "timestamp" in ef_map:
+        selection_scalars.append("timestamp")
+
+    # nested objects we’d like
+    nested = []
+    for obj in ["market", "outcomeToken", "token", "user"]:
+        if obj in object_like:
+            nested.append(obj)
+
+    # For nested objects, we only request id (and conditionId if Market has it)
+    nested_selections = []
+    for obj in nested:
+        obj_type = unwrap_type(ef_map[obj]["type"])["base_name"]
+        subfields = get_type_fields(session, endpoint, obj_type) if obj_type else []
+        subnames = {sf["name"] for sf in subfields}
+        inner = ["id"] if "id" in subnames else []
+        if obj == "market" and "conditionId" in subnames:
+            inner.append("conditionId")
+        if obj == "market" and "question" in subnames:
+            inner.append("question")
+        if inner:
+            nested_selections.append(f"{obj} {{ " + " ".join(inner) + " }}")
+
+    selection_set = " ".join(selection_scalars + nested_selections)
+
+    return {
+        "root_name": root_name,
+        "where_type": where_type,
+        "entity_type": ret_base,
+        "order_by_enum": order_by_enum,
+        "order_by_key": order_by_key,       # can be None if no orderBy arg
+        "cursor_mode": cursor_mode,         # "id" or "timestamp"
+        "cursor_field": cursor_field,       # "id_gt" or "timestamp_gt"/"timestamp_gte"
+        "market_filter_key": market_filter_key,  # best effort; may be None
+        "where_fields": list(where_field_map.keys()),
+        "selection_set": selection_set,
+        "root_args": list(root_args.keys()),
+    }
+
+
+# ---------------- Fetching (pagination) ----------------
+
+def fetch_all_trades(
+    endpoint: str,
+    market_value: Optional[str],
+    out_csv: str,
+    page_size: int = 1000,
+    sleep: float = 0.15,
+    max_pages: Optional[int] = None,
+    debug: bool = False,
+) -> pd.DataFrame:
+    """
+    Fetches ALL rows from the discovered trade-like root field.
+    If the schema supports filtering by conditionId/market/tokenId, it will apply it.
+    Otherwise it will fetch unfiltered (NOT recommended) and you should refine discovery.
+    """
+    session = requests.Session()
+    meta = discover_trade_access(session, endpoint)
+
+    root = meta["root_name"]
+    where_type = meta["where_type"]
+    selection = meta["selection_set"]
+
+    cursor_mode = meta["cursor_mode"]
+    cursor_field = meta["cursor_field"]
+    market_key = meta["market_filter_key"]
+    where_fields = set(meta["where_fields"])
+    root_args = set(meta["root_args"])
+
+    if debug:
+        print("=== DISCOVERY ===")
+        print(f"root field: {root}")
+        print(f"where type: {where_type}")
+        print(f"cursor: {cursor_field} ({cursor_mode})")
+        print(f"market filter key: {market_key}")
+        print(f"root args: {sorted(root_args)}")
+        print(f"where fields (first 30): {sorted(list(where_fields))[:30]}")
+        print(f"selection set: {selection}")
+        print("===============")
+
+    # orderBy support
+    order_by_clause = ""
+    if "orderBy" in root_args and meta["order_by_key"]:
+        # stable pagination prefers ordering by the same dimension as cursor.
+        # If we have id cursor, orderBy=id if possible.
+        order_key = meta["order_by_key"]
+        if cursor_mode == "id" and meta["order_by_enum"]:
+            enum_vals = get_enum_values(session, endpoint, meta["order_by_enum"])
+            if "id" in enum_vals:
+                order_key = "id"
+        order_by_clause = f"orderBy: {order_key}, orderDirection: asc,"
+
+    # Determine variable types for filter/cursor values
+    where_input_fields = {f["name"]: f for f in get_input_fields(session, endpoint, where_type)}
+    cursor_var_gql_type = type_to_gql(where_input_fields[cursor_field]["type"], force_non_null=True)
+
+    market_var_gql_type = None
+    if market_key and market_key in where_input_fields:
+        market_var_gql_type = type_to_gql(where_input_fields[market_key]["type"], force_non_null=True)
+
+    # Build query string dynamically (field names must be literal)
+    # NOTE: skip/offset is intentionally NOT used.
+    var_defs = ["$first: Int!"]
+    if market_var_gql_type and market_value is not None:
+        var_defs.append(f"$market: {market_var_gql_type}")
+    var_defs.append(f"$cursor: {cursor_var_gql_type}")
+
+    # where object literals
+    where_lines = []
+    if market_var_gql_type and market_value is not None:
+        where_lines.append(f"{market_key}: $market")
+    where_lines.append(f"{cursor_field}: $cursor")
+
+    where_block = "{ " + ", ".join(where_lines) + " }"
+
+    QUERY = f"""
+    query Page({", ".join(var_defs)}) {{
+      {root}(
+        first: $first,
+        {order_by_clause}
+        where: {where_block}
+      ) {{
+        {selection}
+      }}
+    }}
+    """
+
+    cursor = "" if cursor_mode == "id" else "0"
+    all_rows: List[Dict[str, Any]] = []
+    page = 0
+
+    while True:
+        if sleep:
+            time.sleep(sleep)
+
+        variables: Dict[str, Any] = {"first": page_size, "cursor": cursor}
+        if market_var_gql_type and market_value is not None:
+            variables["market"] = market_value
+
+        data = gql_post(session, endpoint, QUERY, variables)
+        rows = data.get(root) or []
+        if not rows:
+            break
+
+        all_rows.extend(rows)
+        page += 1
+
+        # advance cursor
+        last = rows[-1]
+        if cursor_mode == "id":
+            cursor = last["id"]
+        else:
+            # timestamps usually come back as strings
+            cursor = str(last.get("timestamp") or cursor)
+
+        if debug:
+            print(f"page={page} fetched={len(rows)} total={len(all_rows)} cursor={cursor}")
+
+        if max_pages is not None and page >= max_pages:
+            break
+
+    df = pd.DataFrame(all_rows)
+
+    # Normalize timestamp if present
+    if "timestamp" in df.columns and not df.empty:
+        # timestamp usually seconds
+        try:
+            df["timestamp"] = pd.to_datetime(df["timestamp"].astype(int), unit="s", utc=True)
+        except Exception:
+            pass
+
+    os.makedirs(os.path.dirname(out_csv) or ".", exist_ok=True)
+    df.to_csv(out_csv, index=False)
+    return df
+
+
+# ---------------- CLI ----------------
+
+def main():
+    p = argparse.ArgumentParser()
+    p.add_argument("--endpoint", default=DEFAULT_ENDPOINT)
+    p.add_argument("--market", default=None, help="ConditionId/marketId/tokenId depending on what the subgraph filter supports.")
+    p.add_argument("--out", default="data/subgraph_trade_history.csv")
+    p.add_argument("--page-size", type=int, default=1000)
+    p.add_argument("--sleep", type=float, default=0.15)
+    p.add_argument("--max-pages", type=int, default=None)
+    p.add_argument("--debug-schema", action="store_true")
+    args = p.parse_args()
+
+    df = fetch_all_trades(
+        endpoint=args.endpoint,
+        market_value=args.market,
+        out_csv=args.out,
+        page_size=args.page_size,
+        sleep=args.sleep,
+        max_pages=args.max_pages,
+        debug=args.debug_schema,
+    )
+    print(f"✅ Wrote {len(df):,} rows to {args.out}")
+
+if __name__ == "__main__":
+    main()
