@@ -895,17 +895,6 @@ class PolymarketCalibration:
         calibrated_prob = self.model.predict_proba(X)[0, 1]
         
         return calibrated_prob
-            'log_volume': np.log1p(market_volume),
-        }
-        
-        # Filter to only features used in model
-        available_features = {k: v for k, v in features_dict.items() if k in self.features}
-        
-        X = pd.DataFrame([available_features])[self.features]
-        
-        calibrated_prob = self.model.predict_proba(X)[0, 1]
-        
-        return calibrated_prob
     
     def save_model(self, filepath='polymarket_calibration_model.json'):
         """Save the trained model."""
