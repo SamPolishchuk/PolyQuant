@@ -19,8 +19,8 @@ We use the Black-Letterman QEPM portfolio structure to update our beliefs on cer
         ii. Fama-French 3F: Essentially arguing the market is somewhat inefficient, and factors explain equilibrium better​
     c. Find the relevant events for these securities, and their associated probabilities on Polymarket.
     d. Somehow aggregate these (or select a range of them) that will be inputed in the views matrices:
-        i. Q (view vector): Q=E[r∣event]−E[r], where Expected return impact=P(event)×β_{asset,event}​×shock magnitude; Eg. “If Israel strikes Iran, defense stocks +5%, airlines −3%”
-        ii. Omega (uncertainty): (σ_asset)^2 × f(time to resolution)×g(liquidity), e.g. Omega = sigma^2 * (T/T_max)
+        i. Q (view vector): Q=E[r∣event]−E[r], where Expected return impact=P(event)×(β_{asset,event}​×shock magnitude); Eg. “If Israel strikes Iran, defense stocks +5%, airlines −3%”
+            ii. Omega (uncertainty): (σ_asset)^2 × f(time to resolution)×g(liquidity), e.g. Omega = sigma^2 * (T/T_max)
         iii. P (asset exposure matrix): assets involved in the view (weighted with )
         iv. Tau (uncertainty in the prior mu): between 0.1 and 0.05
     e. Rebalance weekly, and if we detect an insider trader
@@ -41,5 +41,4 @@ Maduro out by January 31? 0x580adc1327de9bf7c179ef5aaffa3377bb5cb252b7d6390b0271
 
 Israel military action against Iran by Friday?,0x7f39808829da93cfd189807f13f6d86a0e604835e6f9482d8094fac46b3abaac
 
-Israel announces end of military operations against Iran before July?
-0x836e01d34c67bbae976e7dd26b5ef2ec5e0f15f261f62ebae3d3ef4de32258c0
+Israel announces end of military operations against Iran before July? 0x836e01d34c67bbae976e7dd26b5ef2ec5e0f15f261f62ebae3d3ef4de32258c0
